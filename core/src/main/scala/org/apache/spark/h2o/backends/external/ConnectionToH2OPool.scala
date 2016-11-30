@@ -25,20 +25,27 @@ import water.ExternalFrameUtils
 import scala.collection.mutable
 
 /**
-  * Helper containing connections to H2O
+  * since one executor can work on multiple tasks at the same time it can also happen that it needs
+  * to communicate with the same node using 2 or more connections at the given time. For this we use
+  * this helper which internally stores connections to one node and remember which ones are being used and which
+  * ones are free. Programmer then can get connection using getAvailableConnection. This method creates a new connection
+  * if all connections are currently used or reuse the existing free one. Programmer needs to put the connection back to the
+  * pool of available connections using the method putAvailableConnection
   */
-object ConnectionToH2OHelper {
+object ConnectionToH2OPool {
 
+  def withConnections[T]( f: =>  T): T = {
+    clear()
+    val ret = f
+    clear()
+    ret
+  }
 
-  /**
-    * since one executor can work on multiple tasks at the same time it can also happen that it needs
-    * to communicate with the same node using 2 or more connections at the given time. For this we use
-    * this helper which internally stores connections to one node and remember which ones are being used and which
-    * ones are free. Programmer then can get connection using getAvailableConnection. This method creates a new connection
-    * if all connections are currently used or reuse the existing free one. Programmer needs to put the connection back to the
-    * pool of available connections using the method putAvailableConnection
-    */
-  private class PerOneNodeConnection(val nodeDesc: NodeDesc) {
+  private[this] class PerOneNodeConnection(val nodeDesc: NodeDesc) {
+
+    def closeAll(): Unit = {
+      availableConnections.foreach( _._1.close())
+    }
 
     private def getConnection(nodeDesc: NodeDesc): ByteChannel = {
       ExternalFrameUtils.getConnection(nodeDesc.hostname, nodeDesc.port)
@@ -76,21 +83,39 @@ object ConnectionToH2OHelper {
     }
   }
 
-  // this map is created in each executor so we don't have to specify executor Id
-  private[this] val connectionMap = mutable.HashMap.empty[NodeDesc, PerOneNodeConnection]
+  private[this] class ConnectionToH2OPool {
 
-  def getOrCreateConnection(nodeDesc: NodeDesc): ByteChannel = connectionMap.synchronized {
-    if (!connectionMap.contains(nodeDesc)) {
-      connectionMap += nodeDesc -> new PerOneNodeConnection(nodeDesc)
+
+    // this map is created in each executor so we don't have to specify executor Id
+    private[this] val connectionMap = mutable.HashMap.empty[NodeDesc, PerOneNodeConnection]
+
+    def closeAll(): Unit = {
+      connectionMap.foreach( _._2.closeAll())
     }
-    connectionMap(nodeDesc).availableConnection
+
+    def getOrCreateConnection(nodeDesc: NodeDesc): ByteChannel = connectionMap.synchronized {
+      if (!connectionMap.contains(nodeDesc)) {
+        connectionMap += nodeDesc -> new PerOneNodeConnection(nodeDesc)
+      }
+      connectionMap(nodeDesc).availableConnection
+    }
+
+    def putAvailableConnection(nodeDesc: NodeDesc, sock: ByteChannel): Unit = connectionMap.synchronized {
+      if (!connectionMap.contains(nodeDesc)) {
+        connectionMap += nodeDesc -> new PerOneNodeConnection(nodeDesc)
+      }
+      connectionMap(nodeDesc).putAvailableConnection(sock)
+    }
   }
 
-  def putAvailableConnection(nodeDesc: NodeDesc, sock: ByteChannel): Unit = connectionMap.synchronized {
-    if (!connectionMap.contains(nodeDesc)) {
-      connectionMap += nodeDesc -> new PerOneNodeConnection(nodeDesc)
-    }
-    connectionMap(nodeDesc).putAvailableConnection(sock)
+  private var conPool = new ConnectionToH2OPool()
+
+  def clear() = {
+    conPool.closeAll()
+    conPool = new ConnectionToH2OPool()
   }
 
+  def getOrCreateConnection(nodeDesc: NodeDesc) = conPool.getOrCreateConnection(nodeDesc)
+
+  def putAvailableConnection(nodeDesc: NodeDesc, sock: ByteChannel) = conPool.putAvailableConnection(nodeDesc, sock)
 }
