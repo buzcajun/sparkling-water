@@ -81,7 +81,7 @@ object WriteConverterCtxUtils {
     }
 
     val operation: SparkJob[T] = func(keyName, vecTypes, uploadPlan)
-   ConnectionToH2OPool.withConnections {
+   ConnectionToH2OPool.withConnections(preparedRDD) {
       val rows = hc.sparkContext.runJob(preparedRDD, operation) // eager, not lazy, evaluation
       val res = new Array[Long](preparedRDD.partitions.length)
       rows.foreach { case (cidx, nrows) => res(cidx) = nrows }

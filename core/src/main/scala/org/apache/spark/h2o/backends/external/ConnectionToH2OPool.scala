@@ -19,8 +19,9 @@ package org.apache.spark.h2o.backends.external
 
 import java.nio.channels.ByteChannel
 
+import org.apache.spark.h2o.RDD
 import org.apache.spark.h2o.utils.NodeDesc
-import water.ExternalFrameUtils
+import water.{ExternalFrameUtils, MRTask}
 
 import scala.collection.mutable
 
@@ -34,10 +35,17 @@ import scala.collection.mutable
   */
 object ConnectionToH2OPool {
 
-  def withConnections[T]( f: =>  T): T = {
-    clear()
+  def clear(rdd: RDD[_]): Unit = {
+    rdd.mapPartitions{ it =>
+      ConnectionToH2OPool.clearLocally()
+      it
+     }.count()
+  }
+
+  def withConnections[T](rdd: RDD[_])(f: =>  T): T = {
+    clear(rdd)
     val ret = f
-    clear()
+    clear(rdd)
     ret
   }
 
@@ -110,7 +118,7 @@ object ConnectionToH2OPool {
 
   private var conPool = new ConnectionToH2OPool()
 
-  def clear() = {
+  def clearLocally() = {
     conPool.closeAll()
     conPool = new ConnectionToH2OPool()
   }
